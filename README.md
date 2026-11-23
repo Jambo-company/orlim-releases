@@ -1,6 +1,7 @@
 # Orlim — Menu Bar Workstation for AI Coding Tools
 
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B%20Universal%20(arm64%20%2B%20x86__64)-007EDE)](https://github.com/Jambo-company/orlim-releases/releases/latest)
+[![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11%20(x64%20%2B%20ARM64)-0078D4)](https://github.com/Jambo-company/orlim-releases/releases/latest)
 [![Apple Notarized](https://img.shields.io/badge/Apple-Developer%20ID%20%26%20Notarized-2da44e)](https://github.com/Jambo-company/orlim-releases/releases/latest)
 [![Homebrew Cask](https://img.shields.io/badge/Homebrew-brew%20install%20--cask%20Jambo--company%2Ftap%2Forlim-FBB040)](https://github.com/Jambo-company/homebrew-tap)
 
@@ -12,21 +13,32 @@ Instead of guessing when a 5-hour session or weekly model cap will cut you off m
 
 ## Quick Install
 
-### Option 1: Homebrew (Recommended)
+### macOS (macOS 13 Ventura or later — Apple Silicon & Intel)
+
+**Option 1: Homebrew (Recommended)**
 
 ```bash
 brew install --cask Jambo-company/tap/orlim
 ```
 
-To upgrade to the latest release via Homebrew (or use **Check for Updates…** inside Orlim):
+To upgrade via Homebrew (or use **Check for Updates…** inside Orlim):
 
 ```bash
 brew update && brew upgrade --cask orlim
 ```
 
-### Option 2: Direct Download (Universal `.dmg`)
+**Option 2: Direct Download (Universal `.dmg`)**
 
-Download the latest Apple-notarized Universal `.dmg` (`arm64` Apple Silicon + `x86_64` Intel) from [**Releases**](https://github.com/Jambo-company/orlim-releases/releases/latest), open the disk image, and drag **Orlim.app** to `/Applications`.
+Download [**`Orlim-2.1.0-mac-universal.dmg`**](https://github.com/Jambo-company/orlim-releases/releases/latest) (Developer ID signed & Apple notarized), open the disk image, and drag **Orlim.app** to `/Applications`.
+
+### Windows (Windows 10 1809+ & Windows 11 — System Tray + Dashboard)
+
+Download from [**Latest Release**](https://github.com/Jambo-company/orlim-releases/releases/latest):
+
+- **Windows x64 Installer (Intel / AMD PCs):** [**`Orlim-2.1.0-win-x64-setup.exe`**](https://github.com/Jambo-company/orlim-releases/releases/download/v2.1.0-61/Orlim-2.1.0-win-x64-setup.exe) *(or portable [`Orlim-2.1.0-win-x64.zip`](https://github.com/Jambo-company/orlim-releases/releases/download/v2.1.0-61/Orlim-2.1.0-win-x64.zip))*
+- **Windows ARM64 Installer (Snapdragon / Surface ARM PCs):** [**`Orlim-2.1.0-win-arm64-setup.exe`**](https://github.com/Jambo-company/orlim-releases/releases/download/v2.1.0-61/Orlim-2.1.0-win-arm64-setup.exe) *(or portable [`Orlim-2.1.0-win-arm64.zip`](https://github.com/Jambo-company/orlim-releases/releases/download/v2.1.0-61/Orlim-2.1.0-win-arm64.zip))*
+
+> **Note:** Installs per-user with no Administrator prompt required. If Windows SmartScreen displays *"Windows protected your PC"*, click **More info** → **Run anyway**.
 
 ---
 

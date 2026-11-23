@@ -1,0 +1,265 @@
+name: Build & Publish Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Branch, tag, or commit in Jambo-company/Orlim"
+        required: true
+        default: "ra/windows-limits-localization"
+        type: string
+      release_tag:
+        description: "Release tag in Jambo-company/orlim-releases to attach Windows installers to"
+        required: true
+        default: "v2.1.0-61"
+        type: string
+      version:
+        description: "Marketing version string (e.g. 2.1.0)"
+        required: true
+        default: "2.1.0"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows (x64 & ARM64) & Upload Release Assets
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Clone Windows source via read-only deploy key
+        shell: pwsh
+        env:
+          ORLIM_SOURCE_DEPLOY_KEY: ${{ secrets.ORLIM_SOURCE_DEPLOY_KEY }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:ORLIM_SOURCE_DEPLOY_KEY)) {
+            throw "ORLIM_SOURCE_DEPLOY_KEY secret is not configured."
+          }
+
+          $sshDir = Join-Path $env:RUNNER_TEMP "orlim-ssh"
+          $srcDir = Join-Path $env:RUNNER_TEMP "orlim-src"
+          New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
+          $keyPath = Join-Path $sshDir "id_ed25519"
+          $knownHosts = Join-Path $sshDir "known_hosts"
+
+          try {
+            $normalizedKey = ($env:ORLIM_SOURCE_DEPLOY_KEY -replace "`r`n", "`n").TrimEnd() + "`n"
+            [System.IO.File]::WriteAllText($keyPath, $normalizedKey, [System.Text.UTF8Encoding]::new($false))
+            & icacls $keyPath /inheritance:r | Out-Null
+            & icacls $keyPath /grant:r "$($env:USERNAME):(R)" | Out-Null
+
+            $hostKeys = & ssh-keyscan -t ed25519,rsa github.com 2>$null
+            [System.IO.File]::WriteAllLines($knownHosts, $hostKeys, [System.Text.UTF8Encoding]::new($false))
+
+            $env:GIT_SSH_COMMAND = "ssh -i `"$keyPath`" -o UserKnownHostsFile=`"$knownHosts`" -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes"
+            if (Test-Path $srcDir) { Remove-Item -Recurse -Force $srcDir }
+            & git clone --branch $env:SOURCE_REF --depth 1 git@github.com:Jambo-company/Orlim.git $srcDir
+            if ($LASTEXITCODE -ne 0) {
+              throw "git clone failed with exit code $LASTEXITCODE"
+            }
+          } finally {
+            if (Test-Path $keyPath) { Remove-Item -Force $keyPath }
+          }
+
+      - name: Build & Package Windows x64 and ARM64 Installers
+        shell: pwsh
+        env:
+          ORLIM_VERSION: ${{ inputs.version }}
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $srcDir = Join-Path $env:RUNNER_TEMP "orlim-src"
+          $winRoot = Join-Path $srcDir "Windows"
+          $distDir = Join-Path $env:RUNNER_TEMP "orlim-win-dist"
+          New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            & choco install innosetup -y --no-progress
+            if (-not (Test-Path $iscc)) {
+              throw "Inno Setup compiler (ISCC.exe) not found."
+            }
+          }
+
+          $pfxPath = $null
+          $signtool = $null
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_PFX_BASE64) -and -not [string]::IsNullOrWhiteSpace($env:WINDOWS_PFX_PASSWORD)) {
+            $pfxPath = Join-Path $env:RUNNER_TEMP "orlim-codesign.pfx"
+            [System.IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
+            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+
+          function Invoke-OptionalSign([string]$FilePath) {
+            if ($null -ne $pfxPath -and $null -ne $signtool) {
+              & $signtool sign /f $pfxPath /p $env:WINDOWS_PFX_PASSWORD /fd SHA256 /tr "http://timestamp.digicert.com" /td SHA256 $FilePath
+              if ($LASTEXITCODE -ne 0) { throw "signtool failed for $FilePath" }
+            }
+          }
+
+          try {
+            $targets = @(
+              @{ Platform = "x64";   Rid = "win-x64";   ArchSlug = "x64";   InnoArch = "x64compatible" },
+              @{ Platform = "ARM64"; Rid = "win-arm64"; ArchSlug = "arm64"; InnoArch = "arm64" }
+            )
+
+            foreach ($t in $targets) {
+              $platform = $t.Platform
+              $rid = $t.Rid
+              $slug = $t.ArchSlug
+              $innoArch = $t.InnoArch
+
+              Write-Host "=== Building Orlim.Windows ($platform / $rid) ==="
+              & dotnet build (Join-Path $winRoot "Orlim.Windows.csproj") `
+                --configuration Release `
+                --runtime $rid `
+                -p:Platform=$platform `
+                -p:WindowsAppSDKSelfContained=true `
+                -p:WindowsPackageType=None
+              if ($LASTEXITCODE -ne 0) { throw "dotnet build failed for $platform" }
+
+              & (Join-Path $winRoot "scripts\build.ps1") -Platform $platform -Configuration Release
+              if ($LASTEXITCODE -ne 0) { throw "build.ps1 failed for $platform" }
+
+              $pubDir = Join-Path $winRoot "artifacts\publish\$rid"
+              $exePath = Join-Path $pubDir "Orlim.Windows.exe"
+              if (-not (Test-Path $exePath)) {
+                throw "Expected executable missing: $exePath"
+              }
+
+              $priPath = Join-Path $pubDir "Orlim.Windows.pri"
+              if (-not (Test-Path $priPath)) {
+                $builtPri = Get-ChildItem -Path (Join-Path $winRoot "bin") -Recurse -Filter "Orlim.Windows.pri" |
+                  Where-Object { $_.FullName -match $rid } |
+                  Select-Object -First 1
+                if ($null -ne $builtPri) {
+                  Copy-Item $builtPri.FullName $priPath -Force
+                }
+              }
+              if (-not (Test-Path $priPath)) {
+                throw "Expected WinUI PRI resource file missing: $priPath"
+              }
+
+              Invoke-OptionalSign $exePath
+
+              $zipName = "Orlim-$($env:ORLIM_VERSION)-win-$slug.zip"
+              $zipPath = Join-Path $distDir $zipName
+              if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+              Compress-Archive -Path (Join-Path $pubDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
+
+              $setupBase = "Orlim-$($env:ORLIM_VERSION)-win-$slug-setup"
+              $icoPath = Join-Path $winRoot "Assets\Orlim.ico"
+              $issPath = Join-Path $env:RUNNER_TEMP "orlim-$slug.iss"
+
+              $issContent = @"
+          [Setup]
+          AppId={{8E9D4F52-7B3A-4C91-9A2E-6D0F184C5E11}
+          AppName=Orlim
+          AppVersion=$($env:ORLIM_VERSION)
+          AppVerName=Orlim $($env:ORLIM_VERSION) ($platform)
+          AppPublisher=Jambo Lab Inc.
+          AppPublisherURL=https://jambo.team/
+          AppSupportURL=https://github.com/Jambo-company/orlim-releases/issues
+          AppUpdatesURL=https://github.com/Jambo-company/orlim-releases/releases
+          DefaultDirName={autopf}\Orlim
+          DefaultGroupName=Orlim
+          DisableProgramGroupPage=yes
+          PrivilegesRequired=lowest
+          PrivilegesRequiredOverridesAllowed=dialog
+          ArchitecturesAllowed=$innoArch
+          ArchitecturesInstallIn64BitMode=$innoArch
+          OutputDir=$distDir
+          OutputBaseFilename=$setupBase
+          SetupIconFile=$icoPath
+          UninstallDisplayIcon={app}\Orlim.Windows.exe
+          WizardStyle=modern
+          Compression=lzma2/fast
+          SolidCompression=yes
+          CloseApplications=yes
+          RestartApplications=no
+
+          [Languages]
+          Name: "english"; MessagesFile: "compiler:Default.isl"
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+          Name: "startup"; Description: "Start Orlim automatically when Windows starts"; GroupDescription: "Startup:"
+
+          [Files]
+          Source: "$pubDir\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{autoprograms}\Orlim"; Filename: "{app}\Orlim.Windows.exe"
+          Name: "{autodesktop}\Orlim"; Filename: "{app}\Orlim.Windows.exe"; Tasks: desktopicon
+
+          [Registry]
+          Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Orlim"; ValueData: """{app}\Orlim.Windows.exe"""; Flags: uninsdeletevalue; Tasks: startup
+
+          [Run]
+          Filename: "{app}\Orlim.Windows.exe"; Description: "Launch Orlim"; Flags: nowait postinstall skipifsilent
+          "@
+              [System.IO.File]::WriteAllText($issPath, $issContent, [System.Text.UTF8Encoding]::new($false))
+              & $iscc $issPath
+              if ($LASTEXITCODE -ne 0) { throw "ISCC failed for $platform" }
+
+              $setupPath = Join-Path $distDir "$setupBase.exe"
+              if (-not (Test-Path $setupPath)) {
+                throw "Expected installer missing: $setupPath"
+              }
+              Invoke-OptionalSign $setupPath
+
+              foreach ($artifact in @($setupPath, $zipPath)) {
+                $hash = (Get-FileHash -Algorithm SHA256 -Path $artifact).Hash.ToLowerInvariant()
+                $leaf = Split-Path -Leaf $artifact
+                [System.IO.File]::WriteAllText("$artifact.sha256", "$hash  $leaf`n", [System.Text.UTF8Encoding]::new($false))
+              }
+            }
+
+            Get-ChildItem $distDir | Format-Table Name, Length -AutoSize
+          } finally {
+            if ($null -ne $pfxPath -and (Test-Path $pfxPath)) { Remove-Item -Force $pfxPath }
+            if (Test-Path $srcDir) { Remove-Item -Recurse -Force $srcDir }
+          }
+
+      - name: Upload Windows Assets to GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          ORLIM_VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $distDir = Join-Path $env:RUNNER_TEMP "orlim-win-dist"
+          $files = Get-ChildItem -Path $distDir -File | Select-Object -ExpandProperty FullName
+          if ($files.Count -eq 0) {
+            throw "No built Windows artifacts found in $distDir"
+          }
+
+          & gh release upload $env:RELEASE_TAG @files --repo Jambo-company/orlim-releases --clobber
+          if ($LASTEXITCODE -ne 0) { throw "gh release upload failed" }
+
+          $notes = @"
+          ### macOS (macOS 13.0+ Universal: Apple Silicon + Intel)
+          - **Installer DMG:** ``Orlim-$($env:ORLIM_VERSION)-mac-universal.dmg`` (Developer ID signed & Apple notarized)
+          - **Homebrew:** ``brew install --cask Jambo-company/tap/orlim``
+
+          ### Windows (Windows 10 1809+ & Windows 11 — System Tray + Dashboard, 17 Languages)
+          - **Windows x64 Installer (Recommended for Intel/AMD PCs):** ``Orlim-$($env:ORLIM_VERSION)-win-x64-setup.exe``
+          - **Windows ARM64 Installer (Snapdragon / Surface ARM PCs):** ``Orlim-$($env:ORLIM_VERSION)-win-arm64-setup.exe``
+          - **Portable Archives (No installer):** ``Orlim-$($env:ORLIM_VERSION)-win-x64.zip`` / ``Orlim-$($env:ORLIM_VERSION)-win-arm64.zip``
+
+          > **Note for Windows SmartScreen:** Until Authenticode EV signing reputation is complete, if Windows Defender SmartScreen shows *"Windows protected your PC"*, click **More info** -> **Run anyway**. No Administrator privileges are required.
+          "@
+          $notesFile = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          [System.IO.File]::WriteAllText($notesFile, $notes, [System.Text.UTF8Encoding]::new($false))
+          & gh release edit $env:RELEASE_TAG --repo Jambo-company/orlim-releases --notes-file $notesFile

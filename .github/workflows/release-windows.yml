@@ -33,41 +33,14 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      - name: Clone Windows source via read-only deploy key
-        shell: pwsh
-        env:
-          ORLIM_SOURCE_DEPLOY_KEY: ${{ secrets.ORLIM_SOURCE_DEPLOY_KEY }}
-          SOURCE_REF: ${{ inputs.source_ref }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          if ([string]::IsNullOrWhiteSpace($env:ORLIM_SOURCE_DEPLOY_KEY)) {
-            throw "ORLIM_SOURCE_DEPLOY_KEY secret is not configured."
-          }
-
-          $sshDir = Join-Path $env:RUNNER_TEMP "orlim-ssh"
-          $srcDir = Join-Path $env:RUNNER_TEMP "orlim-src"
-          New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
-          $keyPath = Join-Path $sshDir "id_ed25519"
-          $knownHosts = Join-Path $sshDir "known_hosts"
-
-          try {
-            $normalizedKey = ($env:ORLIM_SOURCE_DEPLOY_KEY -replace "`r`n", "`n").TrimEnd() + "`n"
-            [System.IO.File]::WriteAllText($keyPath, $normalizedKey, [System.Text.UTF8Encoding]::new($false))
-            & icacls $keyPath /inheritance:r | Out-Null
-            & icacls $keyPath /grant:r "$($env:USERNAME):(F)" | Out-Null
-
-            $hostKeys = & ssh-keyscan -t ed25519,rsa github.com 2>$null
-            [System.IO.File]::WriteAllLines($knownHosts, $hostKeys, [System.Text.UTF8Encoding]::new($false))
-
-            $env:GIT_SSH_COMMAND = "ssh -i `"$keyPath`" -o UserKnownHostsFile=`"$knownHosts`" -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes"
-            if (Test-Path $srcDir) { Remove-Item -Recurse -Force $srcDir }
-            & git clone --branch $env:SOURCE_REF --depth 1 git@github.com:Jambo-company/Orlim.git $srcDir
-            if ($LASTEXITCODE -ne 0) {
-              throw "git clone failed with exit code $LASTEXITCODE"
-            }
-          } finally {
-            if (Test-Path $keyPath) { Remove-Item -Force $keyPath }
-          }
+      - name: Checkout Windows source via read-only deploy key
+        uses: actions/checkout@v4
+        with:
+          repository: Jambo-company/Orlim
+          ref: ${{ inputs.source_ref }}
+          ssh-key: ${{ secrets.ORLIM_SOURCE_DEPLOY_KEY }}
+          path: orlim-src
+          fetch-depth: 1
 
       - name: Build & Package Windows x64 and ARM64 Installers
         shell: pwsh
@@ -77,7 +50,7 @@ jobs:
           WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
-          $srcDir = Join-Path $env:RUNNER_TEMP "orlim-src"
+          $srcDir = Join-Path $env:GITHUB_WORKSPACE "orlim-src"
           $winRoot = Join-Path $srcDir "Windows"
           $distDir = Join-Path $env:RUNNER_TEMP "orlim-win-dist"
           New-Item -ItemType Directory -Force -Path $distDir | Out-Null

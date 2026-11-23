@@ -54,7 +54,7 @@ jobs:
             $normalizedKey = ($env:ORLIM_SOURCE_DEPLOY_KEY -replace "`r`n", "`n").TrimEnd() + "`n"
             [System.IO.File]::WriteAllText($keyPath, $normalizedKey, [System.Text.UTF8Encoding]::new($false))
             & icacls $keyPath /inheritance:r | Out-Null
-            & icacls $keyPath /grant:r "$($env:USERNAME):(R)" | Out-Null
+            & icacls $keyPath /grant:r "$($env:USERNAME):(F)" | Out-Null
 
             $hostKeys = & ssh-keyscan -t ed25519,rsa github.com 2>$null
             [System.IO.File]::WriteAllLines($knownHosts, $hostKeys, [System.Text.UTF8Encoding]::new($false))
